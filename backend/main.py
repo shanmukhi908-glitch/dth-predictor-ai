@@ -14,7 +14,10 @@ import pandas as pd
 import joblib
 from fastapi import FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+try:
+    from pydantic.v1 import BaseModel, Field, validator
+except ImportError:
+    from pydantic import BaseModel, Field, validator
 
 # ---------------------------------------------------------------------------
 # 1. Custom ScalerBundle Definition & Registration
