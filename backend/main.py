@@ -15,9 +15,9 @@ import joblib
 from fastapi import FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 try:
-    from pydantic.v1 import BaseModel, Field, validator
+    from pydantic.v1 import BaseModel, Field, validator, root_validator
 except ImportError:
-    from pydantic import BaseModel, Field, validator
+    from pydantic import BaseModel, Field, validator, root_validator
 
 # ---------------------------------------------------------------------------
 # 1. Custom ScalerBundle Definition & Registration
@@ -46,17 +46,27 @@ class ScalerBundle:
         Applies MinMaxScaler followed by StandardScaler.
         DO NOT call .clip() on the MinMaxScaler object (MinMaxScaler has no .clip method).
         Uses numpy np.clip(values, min_val, max_val) if clipping is required.
+        Converts input to clean 2D numpy float array to eliminate feature names mismatch.
         """
+        if hasattr(X_encoded_values, 'values'):
+            X_encoded_values = X_encoded_values.values.astype(float)
+        else:
+            X_encoded_values = np.asarray(X_encoded_values, dtype=float)
+
+        if len(X_encoded_values.shape) == 1:
+            X_encoded_values = X_encoded_values.reshape(1, -1)
+
+        if X_encoded_values.shape[1] == 0:
+            raise ValueError("Found array with 0 feature(s) while a minimum of 1 is required.")
+
+        # Step 1: MinMax feature scaling
         if self.feature_scaler is not None:
-            # Ensure clip attribute exists on MinMaxScaler for newer scikit-learn versions
             if not hasattr(self.feature_scaler, 'clip'):
                 self.feature_scaler.clip = False
             try:
                 X_minmax = self.feature_scaler.transform(X_encoded_values)
-            except AttributeError:
-                # If MinMaxScaler raises AttributeError (e.g. 'clip' missing internally),
-                # compute the exact MinMax transformation mathematically:
-                # X_scaled = X * scale_ + min_
+            except Exception:
+                # Mathematical fallback: X_scaled = X * scale_ + min_
                 # and apply numpy clipping: np.clip(values, min_value, max_value)
                 if hasattr(self.feature_scaler, 'scale_') and hasattr(self.feature_scaler, 'min_'):
                     X_minmax = X_encoded_values * self.feature_scaler.scale_ + self.feature_scaler.min_
@@ -67,8 +77,21 @@ class ScalerBundle:
         else:
             X_minmax = X_encoded_values
 
+        if hasattr(X_minmax, 'values'):
+            X_minmax = X_minmax.values.astype(float)
+        else:
+            X_minmax = np.asarray(X_minmax, dtype=float)
+
+        # Step 2: Standard scaling
         if self.std_scaler is not None:
-            return self.std_scaler.transform(X_minmax)
+            try:
+                return self.std_scaler.transform(X_minmax)
+            except Exception:
+                # Mathematical fallback: X_std = (X - mean_) / scale_
+                if hasattr(self.std_scaler, 'mean_') and hasattr(self.std_scaler, 'scale_'):
+                    return (X_minmax - self.std_scaler.mean_) / self.std_scaler.scale_
+                else:
+                    raise
         return X_minmax
 
     def inverse_transform(self, y_scaled):
@@ -76,14 +99,20 @@ class ScalerBundle:
         Applies inverse transformation for target DTH values.
         DO NOT call .clip() on the MinMaxScaler object.
         """
+        if hasattr(y_scaled, 'values'):
+            y_scaled = y_scaled.values.astype(float)
+        else:
+            y_scaled = np.asarray(y_scaled, dtype=float)
+
         if len(y_scaled.shape) == 1:
             y_scaled = y_scaled.reshape(-1, 1)
+
         if self.target_scaler is not None:
             if not hasattr(self.target_scaler, 'clip'):
                 self.target_scaler.clip = False
             try:
                 return self.target_scaler.inverse_transform(y_scaled)
-            except AttributeError:
+            except Exception:
                 # Mathematical inverse transform: y_orig = (y_scaled - min_) / scale_
                 if hasattr(self.target_scaler, 'scale_') and hasattr(self.target_scaler, 'min_'):
                     return (y_scaled - self.target_scaler.min_) / self.target_scaler.scale_
@@ -235,6 +264,59 @@ class CropInput(BaseModel):
     mode: Optional[str] = Field("dataset", description="Prediction mode: 'dataset' or 'external'")
     allow_unseen_categories: Optional[bool] = Field(True, description="Whether to allow unseen categories with generalized estimation")
 
+    @root_validator(pre=True)
+    def normalize_keys(cls, values):
+        if not isinstance(values, dict):
+            return values
+        
+        normalized = {}
+        # Mapping table of alternate field names to canonical CropInput fields
+        key_mappings = {
+            "crop": "Crop",
+            "croptype": "Crop",
+            "crop_type": "Crop",
+            "cropspecies": "Crop",
+            "name": "Name",
+            "cropname": "Name",
+            "crop_name": "Name",
+            "cultivar": "Name",
+            "taxa": "Taxa",
+            "taxaline": "Taxa",
+            "taxa_line": "Taxa",
+            "family": "Family",
+            "familygroup": "Family",
+            "family_group": "Family",
+            "location": "Location",
+            "field": "Location",
+            "env": "Env",
+            "year": "Env",
+            "trialyear": "Env",
+            "trial_year": "Env",
+            "yield": "Yield",
+            "yieldval": "Yield",
+            "yield_val": "Yield",
+            "tstwt": "TSTWT",
+            "testweight": "TSTWT",
+            "test_weight": "TSTWT",
+            "protein": "Protein",
+            "crudeprotein": "Protein",
+            "crude_protein": "Protein",
+            "height": "Height",
+            "plantheight": "Height",
+            "plant_height": "Height",
+            "canopyheight": "Height",
+            "mode": "mode",
+            "allow_unseen_categories": "allow_unseen_categories",
+            "allowunseencategories": "allow_unseen_categories",
+        }
+
+        for k, v in values.items():
+            clean_k = str(k).lower().replace("-", "").replace(" ", "").replace("_", "")
+            target_key = key_mappings.get(clean_k, k)
+            normalized[target_key] = v
+
+        return normalized
+
     @validator("Name", "Taxa", "Family", "Location")
     def validate_non_empty(cls, value, field):
         if not value or not str(value).strip():
@@ -302,13 +384,24 @@ class PredictionResponse(BaseModel):
 def preprocess_and_predict(data: CropInput) -> float:
     """
     Applies the exact notebook preprocessing sequence:
-    1. Construct single-row DataFrame
-    2. Apply pd.get_dummies()
-    3. Reindex to match the exact 1,328 training feature columns with fill_value=0
-    4. Transform via MinMaxScaler followed by StandardScaler (ScalerBundle)
-    5. XGBoost predict
-    6. Inverse-transform to actual days
+    1. Verify feature_columns is loaded and non-empty (authoritative feature list)
+    2. Construct single-row DataFrame from raw inputs
+    3. Apply pd.get_dummies()
+    4. Reindex to match the exact 1,328 training feature columns with fill_value=0
+       (any unseen category automatically gets 0 for all training one-hot features)
+    5. Verify feature matrix is NOT empty (shape[1] > 0)
+    6. Transform via MinMaxScaler followed by StandardScaler (ScalerBundle)
+    7. Match XGBoost booster expectation (nameless 2D numpy array vs DataFrame with feature names)
+    8. XGBoost predict
+    9. Inverse-transform to actual days
     """
+    global feature_columns, scaler, model
+    if not feature_columns:
+        load_artifacts()
+
+    if not feature_columns or len(feature_columns) == 0:
+        raise ValueError("Authoritative feature_columns is empty. Artifacts were not loaded.")
+
     input_dict = {
         "Name": data.Name,
         "Taxa": data.Taxa,
@@ -323,20 +416,47 @@ def preprocess_and_predict(data: CropInput) -> float:
     
     # 1. Single row DataFrame
     input_df = pd.DataFrame([input_dict])
+    if input_df.empty or input_df.shape[1] == 0:
+        raise ValueError("Input feature DataFrame is empty.")
     
-    # 2. Exact categorical one-hot encoding
+    # 2. Categorical one-hot encoding
     input_encoded = pd.get_dummies(input_df)
+    if input_encoded.empty or input_encoded.shape[1] == 0:
+        raise ValueError("Encoded feature DataFrame is empty.")
     
-    # 3. Exact column order alignment matching training feature_columns.json
+    # 3. Exact column order alignment matching training feature_columns.json (1,328 features)
+    # If the frontend sends any category not seen during training, fill its one-hot column with 0
     input_aligned = input_encoded.reindex(columns=feature_columns, fill_value=0)
+    if input_aligned.shape[1] == 0:
+        raise ValueError(f"Feature matrix has 0 columns after alignment against {len(feature_columns)} feature_columns.")
+    if input_aligned.shape[1] != len(feature_columns):
+        raise ValueError(f"Feature matrix count mismatch: aligned {input_aligned.shape[1]} vs expected {len(feature_columns)}.")
+
+    # 4. Convert to 2D numpy array of floats (ensuring no feature name baggage if model expects nameless array)
+    X_matrix = input_aligned.values.astype(np.float64)
+    if X_matrix.shape[1] == 0:
+        raise ValueError("Extracted feature matrix array has 0 features.")
+
+    # 5. Scaling transformation (MinMax + Standard)
+    input_scaled = scaler.transform(X_matrix)
+    if input_scaled.shape[1] == 0:
+        raise ValueError("Scaled feature matrix has 0 features.")
+
+    # 6. Check if booster expects feature names or nameless numpy array
+    booster = model.get_booster() if hasattr(model, "get_booster") else None
+    booster_feature_names = getattr(booster, "feature_names", None) if booster is not None else None
+
+    if booster_feature_names is not None and len(booster_feature_names) > 0:
+        # Booster was trained with feature names: pass DataFrame with those feature names
+        model_input = pd.DataFrame(input_scaled, columns=booster_feature_names)
+    else:
+        # Booster was trained on nameless numpy array: pass pure 2D numpy array without feature names
+        model_input = np.asarray(input_scaled, dtype=np.float64)
+
+    # 7. Model prediction
+    raw_pred_scaled = model.predict(model_input)
     
-    # 4. Scaling transformation (MinMax + Standard)
-    input_scaled = scaler.transform(input_aligned.values.astype(float))
-    
-    # 5. Model prediction
-    raw_pred_scaled = model.predict(input_scaled)
-    
-    # 6. Inverse-transform prediction from [0, 1] range to real Days to Heading
+    # 8. Inverse-transform prediction from [0, 1] range to real Days to Heading
     dth_pred = float(scaler.inverse_transform(raw_pred_scaled).ravel()[0])
     return dth_pred
 
@@ -422,7 +542,11 @@ def predict(input_data: CropInput):
     Accepts raw phenotypic features and returns predicted Days to Heading (DTH)
     along with model performance metrics, mode distinction, and interpretability metadata.
     """
-    # 0. Validate crop species against training dataset support
+    # 0. Log received payload for debugging
+    payload_dict = input_data.dict()
+    print(f"[DEBUG /api/predict] Received payload: {json.dumps(payload_dict, default=str)}")
+
+    # 1. Validate crop species against training dataset support
     crop_val = (input_data.Crop or "Wheat").strip()
     if crop_val.lower() not in ["wheat", "wheat (triticum aestivum)", "wheat (supported)"]:
         raise HTTPException(
@@ -514,6 +638,9 @@ def predict(input_data: CropInput):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback_str = traceback.format_exc()
+        print(f"[ERROR /api/predict] Exception during inference:\n{traceback_str}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Inference error: {str(e)}"
