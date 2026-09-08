@@ -6,25 +6,30 @@ import {
   Sprout,
   HelpCircle,
   AlertCircle,
-  CheckCircle2,
   Bookmark,
   Calendar,
   Layers,
-  Info
+  Info,
+  Database,
+  FlaskConical,
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
-import { CropInput } from '../../types';
+import { CropInput, PredictionMode } from '../../types';
 import { CROP_PRESETS } from '../../data/sampleCrops';
 import { SearchableSelect } from './SearchableSelect';
 import { fetchDropdownOptions } from '../../services/api';
 
 interface PredictionFormProps {
+  mode: PredictionMode;
+  onModeChange: (mode: PredictionMode) => void;
   onSubmit: (data: CropInput) => void;
   isLoading: boolean;
   onReset: () => void;
   initialValues?: CropInput;
 }
 
-const DEFAULT_FORM_VALUES: CropInput = {
+const DEFAULT_DATASET_VALUES: CropInput = {
   Name: 'DHARWAR_57',
   Taxa: 'EA_51',
   Family: 'DHARWAR',
@@ -34,33 +39,67 @@ const DEFAULT_FORM_VALUES: CropInput = {
   TSTWT: 58.60,
   Protein: 13.45,
   Height: 32.83,
+  mode: 'dataset',
+  allow_unseen_categories: false,
+};
+
+const DEFAULT_EXTERNAL_VALUES: CropInput = {
+  Name: 'CUSTOM_LINE_2024',
+  Taxa: 'CUSTOM_TAXA_1',
+  Family: 'CUSTOM_FAMILY',
+  Location: 'Spillman',
+  Env: 2024,
+  Yield: 2.50,
+  TSTWT: 60.00,
+  Protein: 13.50,
+  Height: 35.00,
+  mode: 'external',
+  allow_unseen_categories: true,
+};
+
+// Training dataset distribution reference (from 1,944 observations in Pheno.csv)
+const TRAINING_REFERENCES = {
+  Env: { min: 2014, max: 2016, mean: 2015, unit: 'Year' },
+  Yield: { min: 0.20, max: 4.16, mean: 2.00, unit: 't/ha' },
+  TSTWT: { min: 49.43, max: 65.02, mean: 59.64, unit: 'lb/bu' },
+  Protein: { min: 8.99, max: 18.21, mean: 13.04, unit: '%' },
+  Height: { min: 24.92, max: 50.24, mean: 36.38, unit: 'in' },
 };
 
 // Feature descriptions for tooltips
 const FEATURE_TOOLTIPS: Record<keyof CropInput, string> = {
-  Name: 'Cultivar accession designation or biological germplasm code (e.g., DHARWAR_57).',
-  Taxa: 'Taxonomical breeding line or sub-population line code representing genetic lineages.',
+  Name: 'Cultivar accession designation or biological germplasm code (e.g., DHARWAR_57, or custom breeding line).',
+  Taxa: 'Taxonomical breeding line or sub-population line code representing genetic lineages (e.g., EA_51).',
   Family: 'Breeding pedigree group or familial cluster sharing common ancestral genetic background.',
-  Location: 'Experimental research station field trial site (microclimatic zone, e.g., Spillman, Pullman).',
-  Env: 'Environmental seasonal year of the trial (e.g., 2014, 2015), representing heat units (GDD).',
-  Yield: 'Total crop grain yield measured in metric tons per hectare (t/ha). Typical range: 0.5 - 6.0.',
-  TSTWT: 'Grain test weight measured in pounds per bushel (lb/bu). Reflects seed kernel density.',
-  Protein: 'Crude grain protein content percentage (%). Typical range: 9.0% - 18.0%.',
-  Height: 'Mature vegetative canopy height in inches (in). Major driver of heading duration.',
+  Location: 'Experimental research station field trial site (microclimatic zone, e.g., Spillman).',
+  Env: 'Environmental seasonal year of the trial (e.g., 2014, 2015, 2024), representing accumulated thermal units (GDD).',
+  Yield: 'Total crop grain yield measured in metric tons per hectare (t/ha). Training distribution: 0.20 – 4.16 t/ha.',
+  TSTWT: 'Grain test weight measured in pounds per bushel (lb/bu). Reflects seed kernel density. Training distribution: 49.43 – 65.02 lb/bu.',
+  Protein: 'Crude grain protein content percentage (%). Training distribution: 8.99% – 18.21%.',
+  Height: 'Mature vegetative canopy height in inches (in). Major driver of heading duration. Training distribution: 24.92 – 50.24 in.',
+  mode: 'Prediction mode: Dataset Sample or External Data.',
+  allow_unseen_categories: 'Permit new / out-of-sample germplasms not present in the historical training dataset.',
 };
 
 export const PredictionForm: React.FC<PredictionFormProps> = ({
+  mode,
+  onModeChange,
   onSubmit,
   isLoading,
   onReset,
   initialValues,
 }) => {
-  const [formData, setFormData] = useState<CropInput>(initialValues || DEFAULT_FORM_VALUES);
+  const [formData, setFormData] = useState<CropInput>(() => {
+    if (initialValues) return initialValues;
+    return mode === 'dataset' ? DEFAULT_DATASET_VALUES : DEFAULT_EXTERNAL_VALUES;
+  });
+
+  const [allowUnseenCategories, setAllowUnseenCategories] = useState<boolean>(true);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [activePreset, setActivePreset] = useState<string | null>('dharwar-57');
+  const [activePreset, setActivePreset] = useState<string | null>(mode === 'dataset' ? 'dharwar-57' : null);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
 
-  // Dynamic dropdown options state (loaded via API integration points)
+  // Dynamic dropdown options state (loaded via backend REST endpoints)
   const [nameOptions, setNameOptions] = useState<string[]>([]);
   const [taxaOptions, setTaxaOptions] = useState<string[]>([]);
   const [familyOptions, setFamilyOptions] = useState<string[]>([]);
@@ -83,28 +122,73 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
     loadOptions();
   }, []);
 
+  const handleModeSwitch = (newMode: PredictionMode) => {
+    if (newMode === mode) return;
+    onModeChange(newMode);
+    setErrors({});
+    if (newMode === 'dataset') {
+      setFormData(DEFAULT_DATASET_VALUES);
+      setActivePreset('dharwar-57');
+    } else {
+      setFormData(DEFAULT_EXTERNAL_VALUES);
+      setActivePreset(null);
+    }
+  };
+
+  const isCategoryInDataset = (field: 'Name' | 'Taxa' | 'Family' | 'Location', value: string) => {
+    const trimmed = (value || '').trim();
+    if (!trimmed) return false;
+    switch (field) {
+      case 'Name': return nameOptions.includes(trimmed);
+      case 'Taxa': return taxaOptions.includes(trimmed);
+      case 'Family': return familyOptions.includes(trimmed);
+      case 'Location': return locationOptions.includes(trimmed);
+      default: return false;
+    }
+  };
+
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
 
-    if (!formData.Name) newErrors.Name = 'Please select a crop name.';
-    if (!formData.Taxa) newErrors.Taxa = 'Please select a taxa line.';
-    if (!formData.Family) newErrors.Family = 'Please select a crop family.';
-    if (!formData.Location) newErrors.Location = 'Please select a field trial location.';
-
-    if (!formData.Env || formData.Env < 1980 || formData.Env > 2050) {
-      newErrors.Env = 'Valid trial year required (e.g. 2014 - 2024).';
+    if (!formData.Name || !formData.Name.trim()) {
+      newErrors.Name = 'Please enter or select a Crop Name.';
+    } else if (mode === 'dataset' && nameOptions.length > 0 && !nameOptions.includes(formData.Name)) {
+      newErrors.Name = 'Please select a Crop Name from the historical dataset.';
+    } else if (mode === 'external' && !allowUnseenCategories && nameOptions.length > 0 && !nameOptions.includes(formData.Name)) {
+      newErrors.Name = 'Unseen name detected. Check "Allow out-of-sample germplasms" below to predict with new germplasms.';
     }
-    if (formData.Yield <= 0 || formData.Yield > 15) {
-      newErrors.Yield = 'Enter a valid yield value between 0.1 and 15.0 t/ha.';
+
+    if (!formData.Taxa || !formData.Taxa.trim()) {
+      newErrors.Taxa = 'Please enter or select a Taxa Line.';
+    } else if (mode === 'dataset' && taxaOptions.length > 0 && !taxaOptions.includes(formData.Taxa)) {
+      newErrors.Taxa = 'Please select a Taxa Line from the historical dataset.';
+    }
+
+    if (!formData.Family || !formData.Family.trim()) {
+      newErrors.Family = 'Please enter or select a Family Group.';
+    } else if (mode === 'dataset' && familyOptions.length > 0 && !familyOptions.includes(formData.Family)) {
+      newErrors.Family = 'Please select a Family Group from the historical dataset.';
+    }
+
+    if (!formData.Location || !formData.Location.trim()) {
+      newErrors.Location = 'Please enter or select a Field Trial Location.';
+    }
+
+    // Numerical validation
+    if (!formData.Env || formData.Env < 1980 || formData.Env > 2050) {
+      newErrors.Env = 'Valid trial year required (1980 – 2050).';
+    }
+    if (formData.Yield <= 0 || formData.Yield > 20) {
+      newErrors.Yield = 'Enter a valid yield value between 0.1 and 20.0 t/ha.';
     }
     if (formData.TSTWT <= 30 || formData.TSTWT > 85) {
       newErrors.TSTWT = 'Enter a realistic test weight between 30 and 85 lb/bu.';
     }
     if (formData.Protein <= 2 || formData.Protein > 35) {
-      newErrors.Protein = 'Enter a realistic crude protein percentage (2.0 - 35.0%).';
+      newErrors.Protein = 'Enter a realistic crude protein percentage (2.0 – 35.0%).';
     }
     if (formData.Height <= 10 || formData.Height > 100) {
-      newErrors.Height = 'Enter a realistic plant canopy height (10.0 - 100.0 in).';
+      newErrors.Height = 'Enter a realistic plant canopy height (10.0 – 100.0 in).';
     }
 
     setErrors(newErrors);
@@ -129,7 +213,11 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
   const handleApplyPreset = (presetId: string) => {
     const preset = CROP_PRESETS.find((p) => p.id === presetId);
     if (preset) {
-      setFormData(preset.data);
+      setFormData({
+        ...preset.data,
+        mode: 'dataset',
+        allow_unseen_categories: false,
+      });
       setActivePreset(presetId);
       setErrors({});
     }
@@ -138,50 +226,174 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (validate()) {
-      onSubmit(formData);
+      onSubmit({
+        ...formData,
+        mode,
+        allow_unseen_categories: mode === 'external' ? allowUnseenCategories : false,
+      });
     }
   };
 
   const handleReset = () => {
-    setFormData(DEFAULT_FORM_VALUES);
+    if (mode === 'dataset') {
+      setFormData(DEFAULT_DATASET_VALUES);
+      setActivePreset('dharwar-57');
+    } else {
+      setFormData(DEFAULT_EXTERNAL_VALUES);
+      setActivePreset(null);
+    }
     setErrors({});
-    setActivePreset(null);
     onReset();
   };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      {/* Sample Presets Bar */}
-      <div className="bg-slate-50 p-4 sm:p-5 rounded-3xl border border-slate-200/80">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wider">
-            <Bookmark className="w-4 h-4 text-emerald-600" />
-            <span>Load Research Sample Presets</span>
-          </div>
-          <span className="text-[11px] text-slate-500">
-            1-Click fill with real observations from the 1,944 dataset
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {CROP_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              onClick={() => handleApplyPreset(preset.id)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 flex items-center gap-2 cursor-pointer ${
-                activePreset === preset.id
-                  ? 'bg-emerald-600 text-white shadow-sm'
-                  : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+      {/* MODE SELECTOR SEGMENTED CONTROL */}
+      <div className="bg-white rounded-3xl p-3 sm:p-4 border border-slate-200/80 shadow-soft">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Mode 1: Dataset Sample */}
+          <button
+            type="button"
+            onClick={() => handleModeSwitch('dataset')}
+            className={`p-4 rounded-2xl text-left transition-all duration-200 flex items-start gap-3 cursor-pointer ${
+              mode === 'dataset'
+                ? 'bg-emerald-50/90 border-2 border-emerald-500 shadow-xs'
+                : 'bg-slate-50/60 border border-slate-200 hover:bg-slate-100/80 text-slate-700'
+            }`}
+          >
+            <div
+              className={`p-2.5 rounded-xl ${
+                mode === 'dataset' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-200 text-slate-600'
               }`}
             >
-              <span className={activePreset === preset.id ? 'text-white' : 'text-emerald-600'}>
-                •
-              </span>
-              <span>{preset.name}</span>
-            </button>
-          ))}
+              <Database className="w-5 h-5" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <span className={`text-sm font-bold ${mode === 'dataset' ? 'text-emerald-950' : 'text-slate-800'}`}>
+                  Use Dataset Sample
+                </span>
+                {mode === 'dataset' && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-600 text-white uppercase tracking-wider">
+                    Active
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                Select from the 1,944 historical agronomic records across 648 cultivars with 1-click presets.
+              </p>
+            </div>
+          </button>
+
+          {/* Mode 2: Enter External Data */}
+          <button
+            type="button"
+            onClick={() => handleModeSwitch('external')}
+            className={`p-4 rounded-2xl text-left transition-all duration-200 flex items-start gap-3 cursor-pointer ${
+              mode === 'external'
+                ? 'bg-indigo-50/90 border-2 border-indigo-500 shadow-xs'
+                : 'bg-slate-50/60 border border-slate-200 hover:bg-slate-100/80 text-slate-700'
+            }`}
+          >
+            <div
+              className={`p-2.5 rounded-xl ${
+                mode === 'external' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-200 text-slate-600'
+              }`}
+            >
+              <FlaskConical className="w-5 h-5" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <span className={`text-sm font-bold ${mode === 'external' ? 'text-indigo-950' : 'text-slate-800'}`}>
+                  Enter External Data
+                </span>
+                {mode === 'external' && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-600 text-white uppercase tracking-wider">
+                    Active
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                Manually input custom field trial observations, recent years (e.g. 2024), or novel germplasms.
+              </p>
+            </div>
+          </button>
         </div>
       </div>
+
+      {/* SAMPLE PRESETS BAR (Shown in Dataset Mode) */}
+      {mode === 'dataset' && (
+        <div className="bg-slate-50 p-4 sm:p-5 rounded-3xl border border-slate-200/80">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wider">
+              <Bookmark className="w-4 h-4 text-emerald-600" />
+              <span>Load Research Sample Presets</span>
+            </div>
+            <span className="text-[11px] text-slate-500">
+              1-Click fill with real observations from the 1,944 dataset
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {CROP_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => handleApplyPreset(preset.id)}
+                className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-all duration-200 flex items-center gap-2 cursor-pointer ${
+                  activePreset === preset.id
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                }`}
+              >
+                <span className={activePreset === preset.id ? 'text-white' : 'text-emerald-600'}>
+                  •
+                </span>
+                <span>{preset.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* OUT-OF-SAMPLE TOGGLE BANNER (Shown in External Mode) */}
+      {mode === 'external' && (
+        <div className="bg-indigo-50/70 p-4 sm:p-5 rounded-3xl border border-indigo-200/80 space-y-3">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-xl bg-indigo-100 text-indigo-700 flex-shrink-0 mt-0.5">
+                <Info className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-indigo-950 uppercase tracking-wider">
+                  External Agronomic Data Mode Active
+                </h4>
+                <p className="text-xs text-indigo-900 mt-1 leading-relaxed">
+                  You can evaluate existing cultivars under new environments (e.g., modern trial year 2024, custom protein/height), or enter brand new germplasms.
+                </p>
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer select-none flex-shrink-0 bg-white px-3 py-2 rounded-xl border border-indigo-200 shadow-2xs">
+              <input
+                type="checkbox"
+                checked={allowUnseenCategories}
+                onChange={(e) => setAllowUnseenCategories(e.target.checked)}
+                className="w-4 h-4 text-indigo-600 rounded-sm border-slate-300 focus:ring-indigo-500 cursor-pointer"
+              />
+              <span className="text-xs font-semibold text-slate-800">
+                Allow Novel Germplasms
+              </span>
+            </label>
+          </div>
+
+          <div className="pt-2 border-t border-indigo-100 text-[11px] text-indigo-800/90 flex items-center gap-2">
+            <span className="font-semibold">Note:</span>
+            <span>
+              Unseen categories receive zero-vector genetic baseline while environmental year & phenotypic traits drive heading timing.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* SECTION 1: Crop Information (Categorical Features) */}
       <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-soft space-y-5">
@@ -192,10 +404,12 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-900 tracking-tight">
-                Section 1: Crop Information
+                Section 1: Crop & Germplasm Information
               </h3>
               <p className="text-xs text-slate-500">
-                Categorical features for taxonomy and trial location (dynamically linked to backend)
+                {mode === 'dataset'
+                  ? 'Categorical features selected from the 648 historical cultivars in Pheno.csv'
+                  : 'Manual or suggested germplasm taxonomy codes for external prediction'}
               </p>
             </div>
           </div>
@@ -204,39 +418,95 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
           </span>
         </div>
 
+        {/* HTML5 Datalists for External Mode autocomplete suggestions */}
+        <datalist id="dataset-names">
+          {nameOptions.slice(0, 100).map((opt) => (
+            <option key={opt} value={opt} />
+          ))}
+        </datalist>
+        <datalist id="dataset-taxas">
+          {taxaOptions.map((opt) => (
+            <option key={opt} value={opt} />
+          ))}
+        </datalist>
+        <datalist id="dataset-families">
+          {familyOptions.map((opt) => (
+            <option key={opt} value={opt} />
+          ))}
+        </datalist>
+        <datalist id="dataset-locations">
+          {locationOptions.map((opt) => (
+            <option key={opt} value={opt} />
+          ))}
+        </datalist>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          {/* Field 1: Name (Searchable dropdown) */}
+          {/* Field 1: Name */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
                 <span>Crop Name</span>
                 <span className="text-red-500">*</span>
               </label>
-              <div className="relative">
-                <button
-                  type="button"
-                  onMouseEnter={() => setActiveTooltip('Name')}
-                  onMouseLeave={() => setActiveTooltip(null)}
-                  className="text-slate-400 hover:text-slate-600"
-                  aria-label="Info about Crop Name"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                </button>
-                {activeTooltip === 'Name' && (
-                  <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
-                    {FEATURE_TOOLTIPS.Name}
-                  </div>
+
+              <div className="flex items-center gap-2">
+                {mode === 'external' && formData.Name && (
+                  isCategoryInDataset('Name', formData.Name) ? (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" /> In Dataset
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-amber-600" /> Out-of-Sample
+                    </span>
+                  )
                 )}
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onMouseEnter={() => setActiveTooltip('Name')}
+                    onMouseLeave={() => setActiveTooltip(null)}
+                    className="text-slate-400 hover:text-slate-600"
+                    aria-label="Info about Crop Name"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                  </button>
+                  {activeTooltip === 'Name' && (
+                    <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
+                      {FEATURE_TOOLTIPS.Name}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
-            <SearchableSelect
-              options={nameOptions}
-              value={formData.Name}
-              onChange={(val) => handleChange('Name', val)}
-              placeholder="Select or search Crop Name..."
-              hasError={Boolean(errors.Name)}
-            />
+            {mode === 'dataset' ? (
+              <SearchableSelect
+                options={nameOptions}
+                value={formData.Name}
+                onChange={(val) => handleChange('Name', val)}
+                placeholder="Select or search Crop Name..."
+                hasError={Boolean(errors.Name)}
+              />
+            ) : (
+              <input
+                type="text"
+                list="dataset-names"
+                value={formData.Name}
+                onChange={(e) => handleChange('Name', e.target.value)}
+                placeholder="e.g. DHARWAR_57 or CUSTOM_WHEAT_2024"
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 transition ${
+                  errors.Name ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
+                }`}
+              />
+            )}
+
+            <span className="text-[11px] text-slate-400 mt-1 block">
+              {mode === 'dataset'
+                ? 'Select an accession from the 648 training cultivars.'
+                : 'Type custom germplasm accession or pick suggestion.'}
+            </span>
 
             {errors.Name && (
               <p className="text-xs text-red-500 mt-1.5 flex items-center gap-1">
@@ -245,45 +515,77 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
             )}
           </div>
 
-          {/* Field 2: Taxa (Dropdown) */}
+          {/* Field 2: Taxa */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
                 <span>Taxa Line</span>
                 <span className="text-red-500">*</span>
               </label>
-              <div className="relative">
-                <button
-                  type="button"
-                  onMouseEnter={() => setActiveTooltip('Taxa')}
-                  onMouseLeave={() => setActiveTooltip(null)}
-                  className="text-slate-400 hover:text-slate-600"
-                  aria-label="Info about Taxa"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                </button>
-                {activeTooltip === 'Taxa' && (
-                  <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
-                    {FEATURE_TOOLTIPS.Taxa}
-                  </div>
+
+              <div className="flex items-center gap-2">
+                {mode === 'external' && formData.Taxa && (
+                  isCategoryInDataset('Taxa', formData.Taxa) ? (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" /> In Dataset
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-amber-600" /> Out-of-Sample
+                    </span>
+                  )
                 )}
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onMouseEnter={() => setActiveTooltip('Taxa')}
+                    onMouseLeave={() => setActiveTooltip(null)}
+                    className="text-slate-400 hover:text-slate-600"
+                    aria-label="Info about Taxa"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                  </button>
+                  {activeTooltip === 'Taxa' && (
+                    <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
+                      {FEATURE_TOOLTIPS.Taxa}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
-            <select
-              value={formData.Taxa}
-              onChange={(e) => handleChange('Taxa', e.target.value)}
-              className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 transition ${
-                errors.Taxa ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
-              }`}
-            >
-              <option value="">Select Taxa Line</option>
-              {taxaOptions.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
+            {mode === 'dataset' ? (
+              <select
+                value={formData.Taxa}
+                onChange={(e) => handleChange('Taxa', e.target.value)}
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 transition ${
+                  errors.Taxa ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <option value="">Select Taxa Line</option>
+                {taxaOptions.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                list="dataset-taxas"
+                value={formData.Taxa}
+                onChange={(e) => handleChange('Taxa', e.target.value)}
+                placeholder="e.g. EA_51 or CUSTOM_TAXA"
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 transition ${
+                  errors.Taxa ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
+                }`}
+              />
+            )}
+
+            <span className="text-[11px] text-slate-400 mt-1 block">
+              {mode === 'dataset' ? 'Breeding lineage code from dataset.' : 'Type custom breeding line or select from suggestions.'}
+            </span>
 
             {errors.Taxa && (
               <p className="text-xs text-red-500 mt-1.5 flex items-center gap-1">
@@ -292,45 +594,77 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
             )}
           </div>
 
-          {/* Field 3: Family (Dropdown) */}
+          {/* Field 3: Family */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                <span>Family</span>
+                <span>Family Group</span>
                 <span className="text-red-500">*</span>
               </label>
-              <div className="relative">
-                <button
-                  type="button"
-                  onMouseEnter={() => setActiveTooltip('Family')}
-                  onMouseLeave={() => setActiveTooltip(null)}
-                  className="text-slate-400 hover:text-slate-600"
-                  aria-label="Info about Family"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                </button>
-                {activeTooltip === 'Family' && (
-                  <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
-                    {FEATURE_TOOLTIPS.Family}
-                  </div>
+
+              <div className="flex items-center gap-2">
+                {mode === 'external' && formData.Family && (
+                  isCategoryInDataset('Family', formData.Family) ? (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" /> In Dataset
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-amber-600" /> Out-of-Sample
+                    </span>
+                  )
                 )}
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onMouseEnter={() => setActiveTooltip('Family')}
+                    onMouseLeave={() => setActiveTooltip(null)}
+                    className="text-slate-400 hover:text-slate-600"
+                    aria-label="Info about Family"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                  </button>
+                  {activeTooltip === 'Family' && (
+                    <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
+                      {FEATURE_TOOLTIPS.Family}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
-            <select
-              value={formData.Family}
-              onChange={(e) => handleChange('Family', e.target.value)}
-              className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 transition ${
-                errors.Family ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
-              }`}
-            >
-              <option value="">Select Family Group</option>
-              {familyOptions.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </select>
+            {mode === 'dataset' ? (
+              <select
+                value={formData.Family}
+                onChange={(e) => handleChange('Family', e.target.value)}
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 transition ${
+                  errors.Family ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <option value="">Select Family Group</option>
+                {familyOptions.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                list="dataset-families"
+                value={formData.Family}
+                onChange={(e) => handleChange('Family', e.target.value)}
+                placeholder="e.g. DHARWAR or CUSTOM_PEDIGREE"
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 transition ${
+                  errors.Family ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
+                }`}
+              />
+            )}
+
+            <span className="text-[11px] text-slate-400 mt-1 block">
+              {mode === 'dataset' ? 'Pedigree familial cluster.' : 'Type custom pedigree family or select from suggestions.'}
+            </span>
 
             {errors.Family && (
               <p className="text-xs text-red-500 mt-1.5 flex items-center gap-1">
@@ -339,45 +673,65 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
             )}
           </div>
 
-          {/* Field 4: Location (Dropdown) */}
+          {/* Field 4: Location */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                <span>Location</span>
+                <span>Field Location</span>
                 <span className="text-red-500">*</span>
               </label>
-              <div className="relative">
-                <button
-                  type="button"
-                  onMouseEnter={() => setActiveTooltip('Location')}
-                  onMouseLeave={() => setActiveTooltip(null)}
-                  className="text-slate-400 hover:text-slate-600"
-                  aria-label="Info about Location"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                </button>
-                {activeTooltip === 'Location' && (
-                  <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
-                    {FEATURE_TOOLTIPS.Location}
-                  </div>
-                )}
+
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onMouseEnter={() => setActiveTooltip('Location')}
+                    onMouseLeave={() => setActiveTooltip(null)}
+                    className="text-slate-400 hover:text-slate-600"
+                    aria-label="Info about Location"
+                  >
+                    <HelpCircle className="w-3.5 h-3.5" />
+                  </button>
+                  {activeTooltip === 'Location' && (
+                    <div className="absolute right-0 bottom-6 z-50 w-56 p-2 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-800">
+                      {FEATURE_TOOLTIPS.Location}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
-            <select
-              value={formData.Location}
-              onChange={(e) => handleChange('Location', e.target.value)}
-              className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 transition ${
-                errors.Location ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
-              }`}
-            >
-              <option value="">Select Field Trial Location</option>
-              {locationOptions.map((loc) => (
-                <option key={loc} value={loc}>
-                  {loc}
-                </option>
-              ))}
-            </select>
+            {mode === 'dataset' ? (
+              <select
+                value={formData.Location}
+                onChange={(e) => handleChange('Location', e.target.value)}
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 transition ${
+                  errors.Location ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
+                }`}
+              >
+                <option value="">Select Field Trial Location</option>
+                {locationOptions.map((loc) => (
+                  <option key={loc} value={loc}>
+                    {loc}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                list="dataset-locations"
+                value={formData.Location}
+                onChange={(e) => handleChange('Location', e.target.value)}
+                placeholder="e.g. Spillman or Custom Site"
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm border bg-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 transition ${
+                  errors.Location ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
+                }`}
+              />
+            )}
+
+            <span className="text-[11px] text-slate-400 mt-1 block">
+              Field trial station (e.g. Spillman).
+            </span>
 
             {errors.Location && (
               <p className="text-xs text-red-500 mt-1.5 flex items-center gap-1">
@@ -392,7 +746,7 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
       <div className="bg-white rounded-3xl p-6 sm:p-7 border border-slate-200/80 shadow-soft space-y-5">
         <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-2xl bg-teal-50 text-teal-700">
+            <div className={`p-2.5 rounded-2xl ${mode === 'dataset' ? 'bg-teal-50 text-teal-700' : 'bg-indigo-50 text-indigo-700'}`}>
               <Sliders className="w-5 h-5" />
             </div>
             <div>
@@ -400,7 +754,7 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
                 Section 2: Phenotypic Measurements
               </h3>
               <p className="text-xs text-slate-500">
-                Quantitative agronomic measurements (validated ranges, scaled automatically on backend)
+                Quantitative agronomic traits (automatically standardized on backend using training scaler)
               </p>
             </div>
           </div>
@@ -444,7 +798,10 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
                 errors.Env ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
               }`}
             />
-            <span className="text-[11px] text-slate-400 mt-1 block">Year of testing trial</span>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+              <span>Trial year</span>
+              <span className="font-mono text-slate-500">Ref: 2014 – 2016</span>
+            </div>
             {errors.Env && (
               <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" /> {errors.Env}
@@ -487,7 +844,15 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
                 errors.Yield ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
               }`}
             />
-            <span className="text-[11px] text-slate-400 mt-1 block">Yield standard: 0.5 - 6.0 t/ha</span>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+              <span>Grain yield (t/ha)</span>
+              <span className="font-mono text-slate-500">Ref: 0.20 – 4.16</span>
+            </div>
+            {mode === 'external' && (formData.Yield < TRAINING_REFERENCES.Yield.min || formData.Yield > TRAINING_REFERENCES.Yield.max) && (
+              <span className="text-[10px] text-amber-600 font-medium block mt-0.5">
+                Outside training range (0.20 – 4.16 t/ha)
+              </span>
+            )}
             {errors.Yield && (
               <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" /> {errors.Yield}
@@ -530,7 +895,15 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
                 errors.TSTWT ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
               }`}
             />
-            <span className="text-[11px] text-slate-400 mt-1 block">Test weight (standard: 54 - 64 lb/bu)</span>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+              <span>Test weight</span>
+              <span className="font-mono text-slate-500">Ref: 49.4 – 65.0</span>
+            </div>
+            {mode === 'external' && (formData.TSTWT < TRAINING_REFERENCES.TSTWT.min || formData.TSTWT > TRAINING_REFERENCES.TSTWT.max) && (
+              <span className="text-[10px] text-amber-600 font-medium block mt-0.5">
+                Outside training range (49.43 – 65.02 lb/bu)
+              </span>
+            )}
             {errors.TSTWT && (
               <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" /> {errors.TSTWT}
@@ -573,7 +946,15 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
                 errors.Protein ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
               }`}
             />
-            <span className="text-[11px] text-slate-400 mt-1 block">Grain protein (e.g. 11.5 - 16.0%)</span>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+              <span>Crude protein</span>
+              <span className="font-mono text-slate-500">Ref: 8.99 – 18.2%</span>
+            </div>
+            {mode === 'external' && (formData.Protein < TRAINING_REFERENCES.Protein.min || formData.Protein > TRAINING_REFERENCES.Protein.max) && (
+              <span className="text-[10px] text-amber-600 font-medium block mt-0.5">
+                Outside training range (8.99 – 18.21%)
+              </span>
+            )}
             {errors.Protein && (
               <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" /> {errors.Protein}
@@ -616,7 +997,15 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
                 errors.Height ? 'border-red-400 bg-red-50/30' : 'border-slate-200 hover:border-slate-300'
               }`}
             />
-            <span className="text-[11px] text-slate-400 mt-1 block">Canopy height (e.g. 28 - 45 in)</span>
+            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
+              <span>Canopy height</span>
+              <span className="font-mono text-slate-500">Ref: 24.9 – 50.2</span>
+            </div>
+            {mode === 'external' && (formData.Height < TRAINING_REFERENCES.Height.min || formData.Height > TRAINING_REFERENCES.Height.max) && (
+              <span className="text-[10px] text-amber-600 font-medium block mt-0.5">
+                Outside training range (24.92 – 50.24 in)
+              </span>
+            )}
             {errors.Height && (
               <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
                 <AlertCircle className="w-3.5 h-3.5" /> {errors.Height}
@@ -628,11 +1017,14 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
 
       {/* Action Buttons */}
       <div className="flex flex-col sm:flex-row items-center gap-4 pt-2">
-        {/* Large Attractive Button: “Predict Days to Heading” */}
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full sm:flex-1 flex items-center justify-center gap-2.5 px-8 py-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white font-black text-base shadow-lg shadow-emerald-700/25 hover:shadow-xl hover:-translate-y-0.5 disabled:opacity-50 transition-all duration-200 cursor-pointer"
+          className={`w-full sm:flex-1 flex items-center justify-center gap-2.5 px-8 py-4 rounded-2xl text-white font-black text-base shadow-lg hover:shadow-xl hover:-translate-y-0.5 disabled:opacity-50 transition-all duration-200 cursor-pointer ${
+            mode === 'external'
+              ? 'bg-gradient-to-r from-indigo-600 via-indigo-700 to-purple-600 hover:from-indigo-500 hover:to-purple-500 shadow-indigo-700/25'
+              : 'bg-gradient-to-r from-emerald-600 via-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 shadow-emerald-700/25'
+          }`}
         >
           {isLoading ? (
             <>
@@ -641,8 +1033,10 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
             </>
           ) : (
             <>
-              <Sparkles className="w-5 h-5 text-emerald-200" />
-              <span>Predict Days to Heading</span>
+              <Sparkles className="w-5 h-5 text-white/80" />
+              <span>
+                {mode === 'external' ? 'Predict DTH (External Data)' : 'Predict Days to Heading'}
+              </span>
             </>
           )}
         </button>

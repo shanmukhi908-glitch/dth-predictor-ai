@@ -113,8 +113,92 @@ def test_validation_errors():
     assert res2.status_code == 422, f"Expected 422 for empty Name, got {res2.status_code}"
     print(" PASS: Correctly rejected blank Name string with HTTP 422.")
 
+    # Unseen category in dataset mode rejected with HTTP 400
+    unseen_in_dataset_mode = {
+        "Name": "UNKNOWN_CULTIVAR_XYZ",
+        "Taxa": "EA_51",
+        "Family": "DHARWAR",
+        "Location": "Spillman",
+        "Env": 2014,
+        "Yield": 2.21,
+        "TSTWT": 58.60,
+        "Protein": 13.45,
+        "Height": 32.83,
+        "mode": "dataset"
+    }
+    res3 = client.post("/api/predict", json=unseen_in_dataset_mode)
+    assert res3.status_code == 400, f"Expected 400 for unseen category in dataset mode, got {res3.status_code}"
+    print(" PASS: Correctly rejected unseen category in dataset mode with HTTP 400.")
+
+    # Unseen category in external mode with strict validation (allow_unseen_categories=False) rejected with HTTP 422
+    unseen_strict_mode = {
+        "Name": "UNKNOWN_CULTIVAR_XYZ",
+        "Taxa": "EA_51",
+        "Family": "DHARWAR",
+        "Location": "Spillman",
+        "Env": 2014,
+        "Yield": 2.21,
+        "TSTWT": 58.60,
+        "Protein": 13.45,
+        "Height": 32.83,
+        "mode": "external",
+        "allow_unseen_categories": False
+    }
+    res4 = client.post("/api/predict", json=unseen_strict_mode)
+    assert res4.status_code == 422, f"Expected 422 for strict unseen category, got {res4.status_code}"
+    print(" PASS: Correctly rejected unseen category with strict mode flag with HTTP 422.")
+
+def test_external_mode_predictions():
+    print("\n[TEST 5] Testing External Data Mode Predictions ...")
+
+    # 1. External mode with recognized genotype + custom external field phenotypes
+    payload_ext_known = {
+        "Name": "DHARWAR_57",
+        "Taxa": "EA_51",
+        "Family": "DHARWAR",
+        "Location": "Spillman",
+        "Env": 2024,
+        "Yield": 3.40,
+        "TSTWT": 61.50,
+        "Protein": 14.80,
+        "Height": 41.20,
+        "mode": "external",
+        "allow_unseen_categories": True
+    }
+    res1 = client.post("/api/predict", json=payload_ext_known)
+    assert res1.status_code == 200, f"Expected 200, got {res1.status_code}: {res1.text}"
+    data1 = res1.json()
+    assert data1["isExternalData"] is True
+    assert data1["mode"] == "external"
+    assert len(data1["unseenCategories"]) == 0
+    assert data1["confidence"] == "Very High"
+    print(f" PASS: External mode with known genotype succeeded: {data1['prediction']} Days (Confidence: {data1['confidence']})")
+
+    # 2. External mode with novel out-of-sample germplasm line
+    payload_ext_unseen = {
+        "Name": "KAVERI_GOLD_01",
+        "Taxa": "TAXA_EXT_99",
+        "Family": "DHARWAR",
+        "Location": "Spillman",
+        "Env": 2024,
+        "Yield": 2.95,
+        "TSTWT": 59.20,
+        "Protein": 13.10,
+        "Height": 36.50,
+        "mode": "external",
+        "allow_unseen_categories": True
+    }
+    res2 = client.post("/api/predict", json=payload_ext_unseen)
+    assert res2.status_code == 200, f"Expected 200, got {res2.status_code}: {res2.text}"
+    data2 = res2.json()
+    assert data2["isExternalData"] is True
+    assert len(data2["unseenCategories"]) > 0
+    assert data2["warning"] is not None
+    assert data2["confidence"] == "Moderate"
+    print(f" PASS: External mode with novel germplasm succeeded with out-of-sample warning: {data2['prediction']} Days (Confidence: {data2['confidence']})")
+
 def test_analytics_and_shap():
-    print("\n[TEST 5] Testing Analytics and SHAP Explainability Endpoints ...")
+    print("\n[TEST 6] Testing Analytics and SHAP Explainability Endpoints ...")
     
     # Actual vs Predicted
     res_analytics = client.get("/api/analytics/actual-vs-predicted")
@@ -157,9 +241,10 @@ if __name__ == "__main__":
         test_options()
         test_predict_sample()
         test_validation_errors()
+        test_external_mode_predictions()
         test_analytics_and_shap()
         print("\n==================================================")
-        print("  ALL TESTS PASSED SUCCESSFULLY! (5/5)             ")
+        print("  ALL TESTS PASSED SUCCESSFULLY! (6/6)             ")
         print("==================================================")
     except AssertionError as ae:
         print(f"\nAssertion Error: {ae}")

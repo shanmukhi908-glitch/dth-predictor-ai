@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { PredictionForm } from './PredictionForm';
 import { PredictionResultCard } from './PredictionResultCard';
-import { CropInput, PredictionResult, PageId } from '../../types';
+import { CropInput, PredictionResult, PredictionMode, PageId } from '../../types';
 import { predictDaysToHeading } from '../../services/api';
-import { Sparkles, AlertCircle, RefreshCw, Cpu, CheckCircle2 } from 'lucide-react';
+import { Sparkles, AlertCircle, RefreshCw, Cpu } from 'lucide-react';
 
 interface PredictionViewProps {
   onShowToast: (title: string, message?: string, type?: 'success' | 'error' | 'info') => void;
@@ -14,6 +14,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
   onShowToast,
   onNavigate,
 }) => {
+  const [mode, setMode] = useState<PredictionMode>('dataset');
   const [result, setResult] = useState<PredictionResult | null>(null);
   const [currentInput, setCurrentInput] = useState<CropInput | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -27,15 +28,17 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
     try {
       const response = await predictDaysToHeading(data);
       setResult(response);
+      const isExternal = response.isExternalData || data.mode === 'external';
       onShowToast(
-        'Prediction Generated Successfully!',
+        isExternal ? 'External Prediction Generated!' : 'Prediction Generated Successfully!',
         `XGBoost Regressor predicted ${response.prediction} Days to Heading.`,
         'success'
       );
     } catch (err: any) {
       console.error('Prediction failed:', err);
-      setErrorMsg('Unable to generate prediction. Please verify your input values and try again.');
-      onShowToast('Prediction Failed', 'Please verify your input values and try again.', 'error');
+      const message = err.message || 'Unable to generate prediction. Please verify your input values and try again.';
+      setErrorMsg(message);
+      onShowToast('Prediction Failed', message, 'error');
     } finally {
       setIsLoading(false);
     }
@@ -66,7 +69,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
             Days to Heading Prediction
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 max-w-2xl mt-1">
-            Enter crop phenotypic information to generate an AI-powered Days to Heading prediction.
+            Choose between historical dataset observations or manual external field data to predict inflorescence heading duration.
           </p>
         </div>
 
@@ -76,7 +79,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
         </div>
       </div>
 
-      {/* Error Card as specified */}
+      {/* Error Card */}
       {errorMsg && (
         <div className="p-4 sm:p-5 rounded-2xl bg-red-50/90 border border-red-200 text-red-900 flex items-start gap-3 shadow-xs">
           <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
@@ -116,7 +119,7 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
           onNavigateInsights={handleNavigateInsights}
           onCopyResult={() => {
             navigator.clipboard.writeText(
-              `DTH Prediction: ${result.prediction} Days\nCrop: ${currentInput.Name} (${currentInput.Location})\nModel: XGBoost Regressor (R² 0.9076, RMSE 0.0736)`
+              `DTH Prediction: ${result.prediction} Days\nMode: ${result.isExternalData ? 'External Data' : 'Dataset Sample'}\nCrop: ${currentInput.Name} (${currentInput.Location})\nModel: XGBoost Regressor (R² 0.9076, RMSE 0.0736)`
             );
             onShowToast('Copied to Clipboard', 'Prediction summary copied.', 'info');
           }}
@@ -126,6 +129,8 @@ export const PredictionView: React.FC<PredictionViewProps> = ({
       {/* Main Prediction Form */}
       {(!result || isLoading) && (
         <PredictionForm
+          mode={mode}
+          onModeChange={setMode}
           onSubmit={handleSubmit}
           isLoading={isLoading}
           onReset={handleReset}

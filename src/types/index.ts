@@ -1,3 +1,5 @@
+export type PredictionMode = 'dataset' | 'external';
+
 export interface CropInput {
   Name: string;
   Taxa: string;
@@ -8,6 +10,8 @@ export interface CropInput {
   TSTWT: number;
   Protein: number;
   Height: number;
+  mode?: PredictionMode;
+  allow_unseen_categories?: boolean;
 }
 
 export interface FeatureImpact {
@@ -30,6 +34,10 @@ export interface PredictionApiResponse {
   phenologicalStage?: 'Heading / Inflorescence Emergence';
   explanation?: string;
   featureImpacts?: FeatureImpact[];
+  mode?: PredictionMode;
+  isExternalData?: boolean;
+  unseenCategories?: string[];
+  warning?: string;
 }
 
 export interface PredictionResult extends PredictionApiResponse {
