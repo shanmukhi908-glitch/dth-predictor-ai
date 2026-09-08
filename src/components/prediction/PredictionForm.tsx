@@ -30,6 +30,7 @@ interface PredictionFormProps {
 }
 
 const DEFAULT_DATASET_VALUES: CropInput = {
+  Crop: 'Wheat',
   Name: 'DHARWAR_57',
   Taxa: 'EA_51',
   Family: 'DHARWAR',
@@ -44,6 +45,7 @@ const DEFAULT_DATASET_VALUES: CropInput = {
 };
 
 const DEFAULT_EXTERNAL_VALUES: CropInput = {
+  Crop: 'Wheat',
   Name: 'CUSTOM_LINE_2024',
   Taxa: 'CUSTOM_TAXA_1',
   Family: 'CUSTOM_FAMILY',
@@ -68,6 +70,7 @@ const TRAINING_REFERENCES = {
 
 // Feature descriptions for tooltips
 const FEATURE_TOOLTIPS: Record<keyof CropInput, string> = {
+  Crop: 'Crop species/type. The trained XGBoost model was trained exclusively on 1,944 historical wheat observations (Triticum aestivum).',
   Name: 'Cultivar accession designation or biological germplasm code (e.g., DHARWAR_57, or custom breeding line).',
   Taxa: 'Taxonomical breeding line or sub-population line code representing genetic lineages (e.g., EA_51).',
   Family: 'Breeding pedigree group or familial cluster sharing common ancestral genetic background.',
@@ -79,6 +82,11 @@ const FEATURE_TOOLTIPS: Record<keyof CropInput, string> = {
   Height: 'Mature vegetative canopy height in inches (in). Major driver of heading duration. Training distribution: 24.92 – 50.24 in.',
   mode: 'Prediction mode: Dataset Sample or External Data.',
   allow_unseen_categories: 'Permit new / out-of-sample germplasms not present in the historical training dataset.',
+};
+
+const isCropSupported = (cropName?: string) => {
+  if (!cropName) return true;
+  return cropName.trim().toLowerCase() === 'wheat';
 };
 
 export const PredictionForm: React.FC<PredictionFormProps> = ({
@@ -150,12 +158,18 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
 
+    // Validate Crop Species Support
+    const currentCrop = (formData.Crop || 'Wheat').trim();
+    if (!isCropSupported(currentCrop)) {
+      newErrors.Crop = 'This crop is not supported by the current trained model. Please select a crop available in the training dataset.';
+    }
+
     if (!formData.Name || !formData.Name.trim()) {
-      newErrors.Name = 'Please enter or select a Crop Name.';
+      newErrors.Name = 'Please enter or select a Cultivar / Germplasm Designation (Name).';
     } else if (mode === 'dataset' && nameOptions.length > 0 && !nameOptions.includes(formData.Name)) {
-      newErrors.Name = 'Please select a Crop Name from the historical dataset.';
+      newErrors.Name = 'Please select an accession name from the historical dataset.';
     } else if (mode === 'external' && !allowUnseenCategories && nameOptions.length > 0 && !nameOptions.includes(formData.Name)) {
-      newErrors.Name = 'Unseen name detected. Check "Allow out-of-sample germplasms" below to predict with new germplasms.';
+      newErrors.Name = 'Unseen accession detected. Check "Allow out-of-sample germplasms" below to predict with new germplasms.';
     }
 
     if (!formData.Taxa || !formData.Taxa.trim()) {
@@ -440,12 +454,89 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
           ))}
         </datalist>
 
+        {/* Target Crop Species Selection */}
+        <div className="p-4 sm:p-5 rounded-2xl bg-slate-50/90 border border-slate-200/90 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Sprout className="w-4 h-4 text-emerald-600" />
+              <label className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                Target Crop Species
+              </label>
+              <span className="text-red-500">*</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {isCropSupported(formData.Crop || 'Wheat') ? (
+                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300/60 flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Supported Model Species (Pheno.csv)
+                </span>
+              ) : (
+                <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300/60 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-600" /> Unsupported Crop
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {[
+              { id: 'Wheat', label: 'Wheat (Supported)', desc: 'Triticum aestivum', supported: true },
+              { id: 'Paddy', label: 'Paddy / Rice', desc: 'Oryza sativa', supported: false },
+              { id: 'Cotton', label: 'Cotton', desc: 'Gossypium', supported: false },
+              { id: 'Maize', label: 'Maize / Corn', desc: 'Zea mays', supported: false },
+              { id: 'Other', label: 'Other Crops', desc: 'Custom species', supported: false },
+            ].map((crop) => {
+              const isSelected = (formData.Crop || 'Wheat') === crop.id;
+              return (
+                <button
+                  key={crop.id}
+                  type="button"
+                  onClick={() => handleChange('Crop', crop.id)}
+                  className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                    isSelected
+                      ? crop.supported
+                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                        : 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="text-xs font-bold block">{crop.label}</span>
+                  <span
+                    className={`text-[10px] block mt-0.5 ${
+                      isSelected ? 'text-white/80' : 'text-slate-400'
+                    }`}
+                  >
+                    {crop.desc}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {!isCropSupported(formData.Crop || 'Wheat') && (
+            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start gap-2.5 animate-in fade-in duration-200">
+              <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-900">Crop Not Supported by Current Model</p>
+                <p className="mt-0.5 leading-relaxed">
+                  This crop is not supported by the current trained model. Please select a crop available in the training dataset.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {errors.Crop && (
+            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+              <AlertCircle className="w-3.5 h-3.5" /> {errors.Crop}
+            </p>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           {/* Field 1: Name */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                <span>Crop Name</span>
+                <span>Cultivar / Germplasm Code (Name)</span>
                 <span className="text-red-500">*</span>
               </label>
 

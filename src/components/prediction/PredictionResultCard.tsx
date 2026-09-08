@@ -88,7 +88,7 @@ export const PredictionResultCard: React.FC<PredictionResultCardProps> = ({
               Predicted Days to Heading
             </h2>
             <p className="text-xs text-slate-300 mt-1">
-              Accession: <strong className="text-white">{inputData.Name}</strong> • Line: <strong className="text-white">{inputData.Taxa}</strong> • Field: <strong className="text-white">{inputData.Location}</strong>
+              Crop: <strong className="text-emerald-300">{inputData.Crop || result.crop || 'Wheat'}</strong> • Accession: <strong className="text-white">{inputData.Name}</strong> • Line: <strong className="text-white">{inputData.Taxa}</strong> • Field: <strong className="text-white">{inputData.Location}</strong>
             </p>
           </div>
 
@@ -261,10 +261,14 @@ export const PredictionResultCard: React.FC<PredictionResultCardProps> = ({
                 Input Summary ({isExternal ? 'External Data' : 'Dataset Sample'})
               </h4>
             </div>
-            <span className="text-[11px] text-slate-400">9 User-Entered Features</span>
+            <span className="text-[11px] text-slate-400">10 Agronomic & Trait Features</span>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <div className="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200/80 shadow-2xs">
+              <span className="text-[10px] font-bold text-emerald-700 uppercase block">Crop</span>
+              <span className="text-xs font-bold text-emerald-950 truncate block mt-0.5">{inputData.Crop || result.crop || 'Wheat'}</span>
+            </div>
             <div className="p-3 rounded-2xl bg-white border border-slate-200/70 shadow-2xs">
               <span className="text-[10px] font-bold text-slate-400 uppercase block">Name</span>
               <span className="text-xs font-bold text-slate-800 truncate block mt-0.5">{inputData.Name}</span>

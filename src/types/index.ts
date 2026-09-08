@@ -1,6 +1,7 @@
 export type PredictionMode = 'dataset' | 'external';
 
 export interface CropInput {
+  Crop?: string;
   Name: string;
   Taxa: string;
   Family: string;
@@ -38,6 +39,7 @@ export interface PredictionApiResponse {
   isExternalData?: boolean;
   unseenCategories?: string[];
   warning?: string;
+  crop?: string;
 }
 
 export interface PredictionResult extends PredictionApiResponse {

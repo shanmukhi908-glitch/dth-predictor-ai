@@ -26,6 +26,7 @@ class ScalerBundle:
     """
     Container bundle holding the fitted feature_scaler, std_scaler, and target_scaler.
     Matches the exact serialization structure created during model training.
+    Ensures full compatibility across scikit-learn versions without calling .clip() on scalers.
     """
     def __init__(self, feature_scaler=None, std_scaler=None, target_scaler=None):
         self.feature_scaler = feature_scaler
@@ -41,13 +42,54 @@ class ScalerBundle:
         return self.scalers[item]
 
     def transform(self, X_encoded_values):
-        X_minmax = self.feature_scaler.transform(X_encoded_values)
-        return self.std_scaler.transform(X_minmax)
+        """
+        Applies MinMaxScaler followed by StandardScaler.
+        DO NOT call .clip() on the MinMaxScaler object (MinMaxScaler has no .clip method).
+        Uses numpy np.clip(values, min_val, max_val) if clipping is required.
+        """
+        if self.feature_scaler is not None:
+            # Ensure clip attribute exists on MinMaxScaler for newer scikit-learn versions
+            if not hasattr(self.feature_scaler, 'clip'):
+                self.feature_scaler.clip = False
+            try:
+                X_minmax = self.feature_scaler.transform(X_encoded_values)
+            except AttributeError:
+                # If MinMaxScaler raises AttributeError (e.g. 'clip' missing internally),
+                # compute the exact MinMax transformation mathematically:
+                # X_scaled = X * scale_ + min_
+                # and apply numpy clipping: np.clip(values, min_value, max_value)
+                if hasattr(self.feature_scaler, 'scale_') and hasattr(self.feature_scaler, 'min_'):
+                    X_minmax = X_encoded_values * self.feature_scaler.scale_ + self.feature_scaler.min_
+                    fr = getattr(self.feature_scaler, 'feature_range', (0, 1))
+                    X_minmax = np.clip(X_minmax, fr[0], fr[1])
+                else:
+                    raise
+        else:
+            X_minmax = X_encoded_values
+
+        if self.std_scaler is not None:
+            return self.std_scaler.transform(X_minmax)
+        return X_minmax
 
     def inverse_transform(self, y_scaled):
+        """
+        Applies inverse transformation for target DTH values.
+        DO NOT call .clip() on the MinMaxScaler object.
+        """
         if len(y_scaled.shape) == 1:
             y_scaled = y_scaled.reshape(-1, 1)
-        return self.target_scaler.inverse_transform(y_scaled)
+        if self.target_scaler is not None:
+            if not hasattr(self.target_scaler, 'clip'):
+                self.target_scaler.clip = False
+            try:
+                return self.target_scaler.inverse_transform(y_scaled)
+            except AttributeError:
+                # Mathematical inverse transform: y_orig = (y_scaled - min_) / scale_
+                if hasattr(self.target_scaler, 'scale_') and hasattr(self.target_scaler, 'min_'):
+                    return (y_scaled - self.target_scaler.min_) / self.target_scaler.scale_
+                else:
+                    raise
+        return y_scaled
 
 # Ensure joblib unpickler resolves ScalerBundle across modules
 if '__main__' in sys.modules:
@@ -86,6 +128,15 @@ def load_artifacts():
         raise FileNotFoundError(f"Scaler file not found at {SCALER_PATH}")
     scaler = joblib.load(SCALER_PATH)
 
+    # Ensure backwards compatibility for MinMaxScaler across scikit-learn versions
+    # without ever calling .clip() on the scaler object
+    if hasattr(scaler, 'feature_scaler') and scaler.feature_scaler is not None:
+        if not hasattr(scaler.feature_scaler, 'clip'):
+            scaler.feature_scaler.clip = False
+    if hasattr(scaler, 'target_scaler') and scaler.target_scaler is not None:
+        if not hasattr(scaler.target_scaler, 'clip'):
+            scaler.target_scaler.clip = False
+
     print(f"[Backend Init] Loading feature columns from: {COLUMNS_PATH}")
     if not os.path.exists(COLUMNS_PATH):
         raise FileNotFoundError(f"Feature columns file not found at {COLUMNS_PATH}")
@@ -108,7 +159,9 @@ def load_artifacts():
             "name": unique_names,
             "taxa": unique_taxas,
             "family": unique_families,
-            "location": combined_locations
+            "location": combined_locations,
+            "crop": ["Wheat"],
+            "crops": ["Wheat", "Paddy", "Cotton", "Maize", "Other"]
         }
     else:
         pheno_df = None
@@ -116,7 +169,9 @@ def load_artifacts():
             "name": ["DHARWAR_57", "DHARWAR_58", "DHARWAR_59", "DHARWAR_60", "DHARWAR_61"],
             "taxa": ["EA_51", "EA_52", "EA_53", "EA_54", "EA_55"],
             "family": ["DHARWAR", "PBW", "VIDA"],
-            "location": ["Spillman", "Pullman"]
+            "location": ["Spillman", "Pullman"],
+            "crop": ["Wheat"],
+            "crops": ["Wheat", "Paddy", "Cotton", "Maize", "Other"]
         }
     
     print(f"[Backend Init] Artifacts loaded successfully ({len(feature_columns)} features).")
@@ -167,6 +222,7 @@ app.add_middleware(
 # 4. Pydantic Models & Input Validation
 # ---------------------------------------------------------------------------
 class CropInput(BaseModel):
+    Crop: Optional[str] = Field("Wheat", description="Crop species / plant type (e.g. Wheat, Paddy, Cotton, Maize)")
     Name: str = Field(..., description="Cultivar or Accession Name (e.g. DHARWAR_57)")
     Taxa: str = Field(..., description="Taxonomical designation (e.g. EA_51)")
     Family: str = Field(..., description="Breeding Family (e.g. DHARWAR)")
@@ -198,6 +254,7 @@ class CropInput(BaseModel):
     class Config:
         schema_extra = {
             "example": {
+                "Crop": "Wheat",
                 "Name": "DHARWAR_57",
                 "Taxa": "EA_51",
                 "Family": "DHARWAR",
@@ -236,6 +293,7 @@ class PredictionResponse(BaseModel):
     isExternalData: Optional[bool] = False
     unseenCategories: Optional[List[str]] = []
     warning: Optional[str] = None
+    crop: Optional[str] = "Wheat"
     timestamp: Optional[str] = None
 
 # ---------------------------------------------------------------------------
@@ -364,6 +422,14 @@ def predict(input_data: CropInput):
     Accepts raw phenotypic features and returns predicted Days to Heading (DTH)
     along with model performance metrics, mode distinction, and interpretability metadata.
     """
+    # 0. Validate crop species against training dataset support
+    crop_val = (input_data.Crop or "Wheat").strip()
+    if crop_val.lower() not in ["wheat", "wheat (triticum aestivum)", "wheat (supported)"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This crop is not supported by the current trained model. Please select a crop available in the training dataset."
+        )
+
     # Detect unseen categorical features
     unseen_cats = []
     known_names = set(categorical_options.get("name", []))
@@ -442,6 +508,7 @@ def predict(input_data: CropInput):
             isExternalData=is_external,
             unseenCategories=unseen_cats,
             warning=warning,
+            crop=crop_val,
             timestamp=datetime.utcnow().isoformat() + "Z"
         )
     except HTTPException:
@@ -451,6 +518,19 @@ def predict(input_data: CropInput):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Inference error: {str(e)}"
         )
+
+@app.get("/api/options/crops", tags=["Metadata"])
+def get_crop_options():
+    """
+    Returns crops represented in training data vs other agricultural crops.
+    """
+    return {
+        "supported_crop": "Wheat",
+        "supported_crops": ["Wheat"],
+        "all_crops": ["Wheat", "Paddy", "Cotton", "Maize", "Other"],
+        "dataset_species": "Wheat (Triticum aestivum)",
+        "message": "The XGBoost model was trained exclusively on 1,944 wheat (Triticum aestivum) observations from Spillman Agronomy Farm."
+    }
 
 @app.get("/api/options/{field}", tags=["Metadata"])
 def get_options(field: str):

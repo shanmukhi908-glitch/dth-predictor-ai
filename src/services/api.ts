@@ -380,6 +380,7 @@ function parseApiResponse(backendRes: any, input: CropInput): PredictionResult {
       typeof backendRes.isExternalData === 'boolean' ? backendRes.isExternalData : input.mode === 'external',
     unseenCategories: backendRes.unseenCategories || [],
     warning: backendRes.warning,
+    crop: backendRes.crop || input.Crop || 'Wheat',
     timestamp: backendRes.timestamp || new Date().toISOString(),
   };
 }

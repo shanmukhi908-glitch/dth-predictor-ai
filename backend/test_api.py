@@ -232,6 +232,74 @@ def test_analytics_and_shap():
     assert isinstance(local_impacts, list) and len(local_impacts) > 0
     print(f" PASS: /api/shap/prediction returned {len(local_impacts)} local feature impacts.")
 
+def test_crop_selection_and_scaler_compatibility():
+    print("\n[TEST 7] Testing Crop Selection & Scaler Compatibility (No .clip() on Scaler) ...")
+    
+    # 1. Supported crop 'Wheat'
+    payload_wheat = {
+        "Crop": "Wheat",
+        "Name": "DHARWAR_57",
+        "Taxa": "EA_51",
+        "Family": "DHARWAR",
+        "Location": "Spillman",
+        "Env": 2014,
+        "Yield": 2.21,
+        "TSTWT": 58.60,
+        "Protein": 13.45,
+        "Height": 32.83,
+        "mode": "dataset"
+    }
+    res_wheat = client.post("/api/predict", json=payload_wheat)
+    assert res_wheat.status_code == 200, f"Expected 200 for Wheat, got {res_wheat.status_code}: {res_wheat.text}"
+    data_wheat = res_wheat.json()
+    assert data_wheat["prediction"] > 0
+    assert data_wheat["crop"] == "Wheat"
+    print(f" PASS: Supported crop 'Wheat' predicted successfully: {data_wheat['prediction']} Days")
+
+    # 2. Unsupported crop 'Paddy'
+    payload_paddy = {
+        "Crop": "Paddy",
+        "Name": "DHARWAR_57",
+        "Taxa": "EA_51",
+        "Family": "DHARWAR",
+        "Location": "Spillman",
+        "Env": 2014,
+        "Yield": 2.21,
+        "TSTWT": 58.60,
+        "Protein": 13.45,
+        "Height": 32.83
+    }
+    res_paddy = client.post("/api/predict", json=payload_paddy)
+    assert res_paddy.status_code == 400, f"Expected 400 for Paddy, got {res_paddy.status_code}"
+    expected_msg = "This crop is not supported by the current trained model. Please select a crop available in the training dataset."
+    assert expected_msg in res_paddy.json()["detail"]
+    print(" PASS: Correctly rejected unsupported crop 'Paddy' with exact specified message.")
+
+    # 3. Unsupported crop 'Cotton'
+    payload_cotton = {
+        "Crop": "Cotton",
+        "Name": "DHARWAR_57",
+        "Taxa": "EA_51",
+        "Family": "DHARWAR",
+        "Location": "Spillman",
+        "Env": 2014,
+        "Yield": 2.21,
+        "TSTWT": 58.60,
+        "Protein": 13.45,
+        "Height": 32.83
+    }
+    res_cotton = client.post("/api/predict", json=payload_cotton)
+    assert res_cotton.status_code == 400
+    assert expected_msg in res_cotton.json()["detail"]
+    print(" PASS: Correctly rejected unsupported crop 'Cotton' with exact specified message.")
+
+    # 4. GET /api/options/crops
+    res_crops = client.get("/api/options/crops")
+    assert res_crops.status_code == 200
+    crop_info = res_crops.json()
+    assert "Wheat" in crop_info["supported_crops"]
+    print(f" PASS: /api/options/crops returned supported crop: {crop_info['supported_crops']}")
+
 if __name__ == "__main__":
     print("==================================================")
     print("  DAYS TO HEADING (DTH) API AUTOMATED TEST SUITE  ")
@@ -243,8 +311,9 @@ if __name__ == "__main__":
         test_validation_errors()
         test_external_mode_predictions()
         test_analytics_and_shap()
+        test_crop_selection_and_scaler_compatibility()
         print("\n==================================================")
-        print("  ALL TESTS PASSED SUCCESSFULLY! (6/6)             ")
+        print("  ALL TESTS PASSED SUCCESSFULLY! (7/7)             ")
         print("==================================================")
     except AssertionError as ae:
         print(f"\nAssertion Error: {ae}")
