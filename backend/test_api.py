@@ -271,9 +271,10 @@ def test_crop_selection_and_scaler_compatibility():
     }
     res_paddy = client.post("/api/predict", json=payload_paddy)
     assert res_paddy.status_code == 400, f"Expected 400 for Paddy, got {res_paddy.status_code}"
-    expected_msg = "This crop is not supported by the current trained model. Please select a crop available in the training dataset."
-    assert expected_msg in res_paddy.json()["detail"]
-    print(" PASS: Correctly rejected unsupported crop 'Paddy' with exact specified message.")
+    detail_paddy = res_paddy.json()["detail"]
+    assert "A trained model for this crop is not yet available." in detail_paddy
+    assert "Prediction for Paddy requires a dedicated" in detail_paddy
+    print(" PASS: Correctly rejected unsupported crop 'Paddy' with model registry unavailable notice & dataset requirement.")
 
     # 3. Unsupported crop 'Cotton'
     payload_cotton = {
@@ -290,8 +291,10 @@ def test_crop_selection_and_scaler_compatibility():
     }
     res_cotton = client.post("/api/predict", json=payload_cotton)
     assert res_cotton.status_code == 400
-    assert expected_msg in res_cotton.json()["detail"]
-    print(" PASS: Correctly rejected unsupported crop 'Cotton' with exact specified message.")
+    detail_cotton = res_cotton.json()["detail"]
+    assert "A trained model for this crop is not yet available." in detail_cotton
+    assert "Prediction for Cotton requires a dedicated" in detail_cotton
+    print(" PASS: Correctly rejected unsupported crop 'Cotton' with model registry unavailable notice & dataset requirement.")
 
     # 4. GET /api/options/crops
     res_crops = client.get("/api/options/crops")

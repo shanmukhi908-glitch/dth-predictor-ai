@@ -129,15 +129,116 @@ if __name__ in sys.modules:
     sys.modules[__name__].ScalerBundle = ScalerBundle
 
 # ---------------------------------------------------------------------------
-# 2. File Paths & In-Memory Artifact Loading
+# 2. Multi-Crop Model Registry & File Paths
 # ---------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "models", "xgboost_agronomy_model.pkl")
-SCALER_PATH = os.path.join(BASE_DIR, "models", "scaler.pkl")
-COLUMNS_PATH = os.path.join(BASE_DIR, "models", "feature_columns.json")
+MODELS_ROOT = os.path.join(BASE_DIR, "models")
 DATA_PATH = os.path.join(BASE_DIR, "data", "Pheno.csv")
 
-# Global variables for in-memory model and artifacts
+class CropModelBundle:
+    """
+    Encapsulates trained model artifacts and requirements metadata for a specific crop.
+    """
+    def __init__(self, crop_key: str, display_name: str, model_dir: str):
+        self.crop_key = crop_key.lower()
+        self.display_name = display_name
+        self.model_dir = model_dir
+        self.model = None
+        self.scaler = None
+        self.feature_columns: List[str] = []
+        self.is_available = False
+        self.requirements_notice = ""
+
+    def load(self, fallback_dir: Optional[str] = None):
+        target_dir = self.model_dir if os.path.exists(os.path.join(self.model_dir, "xgboost_agronomy_model.pkl")) else fallback_dir
+        if target_dir and os.path.exists(os.path.join(target_dir, "xgboost_agronomy_model.pkl")):
+            model_path = os.path.join(target_dir, "xgboost_agronomy_model.pkl")
+            scaler_path = os.path.join(target_dir, "scaler.pkl")
+            cols_path = os.path.join(target_dir, "feature_columns.json")
+
+            print(f"[Model Registry] Loading {self.display_name} model from: {model_path}")
+            self.model = joblib.load(model_path)
+            # Patch feature_types attribute for XGBoost cross-version compatibility
+            if not hasattr(self.model, 'feature_types'):
+                self.model.feature_types = None
+            if hasattr(self.model, '_Booster') and self.model._Booster is not None:
+                if not hasattr(self.model._Booster, 'feature_types'):
+                    self.model._Booster.feature_types = None
+
+            print(f"[Model Registry] Loading {self.display_name} scaler from: {scaler_path}")
+            self.scaler = joblib.load(scaler_path)
+            # Ensure clip attribute exists on MinMaxScaler for newer scikit-learn versions
+            if hasattr(self.scaler, 'feature_scaler') and self.scaler.feature_scaler is not None:
+                if not hasattr(self.scaler.feature_scaler, 'clip'):
+                    self.scaler.feature_scaler.clip = False
+            if hasattr(self.scaler, 'target_scaler') and self.scaler.target_scaler is not None:
+                if not hasattr(self.scaler.target_scaler, 'clip'):
+                    self.scaler.target_scaler.clip = False
+
+            if os.path.exists(cols_path):
+                with open(cols_path, "r", encoding="utf-8") as f:
+                    self.feature_columns = json.load(f)
+
+            self.is_available = True
+            print(f"[Model Registry] {self.display_name} model loaded successfully ({len(self.feature_columns)} features).")
+        else:
+            self.is_available = False
+            print(f"[Model Registry] No trained model artifact in {self.model_dir} for {self.display_name}.")
+
+class CropModelRegistry:
+    """
+    Central registry managing crop-specific models and future crop extensibility.
+    """
+    def __init__(self, base_models_dir: str):
+        self.base_dir = base_models_dir
+        self.crops: Dict[str, CropModelBundle] = {}
+        self._init_crops()
+
+    def _init_crops(self):
+        # 1. Wheat
+        wheat = CropModelBundle("wheat", "Wheat", os.path.join(self.base_dir, "wheat"))
+        wheat.requirements_notice = "Trained model available (Spillman Agronomy Farm 1,944 wheat observations)."
+        self.crops["wheat"] = wheat
+
+        # 2. Cotton
+        cotton = CropModelBundle("cotton", "Cotton", os.path.join(self.base_dir, "cotton"))
+        cotton.requirements_notice = (
+            "Prediction for Cotton requires a dedicated Gossypium hirsutum phenotypic dataset "
+            "(measuring plant height, boll count, lint yield, and flowering dates) and a calibrated regression model. "
+            "The current deployed model is trained on Wheat data."
+        )
+        self.crops["cotton"] = cotton
+
+        # 3. Paddy / Rice
+        paddy = CropModelBundle("paddy", "Paddy", os.path.join(self.base_dir, "paddy"))
+        paddy.requirements_notice = (
+            "Prediction for Paddy requires a dedicated Oryza sativa agronomic dataset "
+            "(measuring effective tiller number, panicle emergence, grain yield, and heading dates) and a calibrated regression model. "
+            "The current deployed model is trained on Wheat data."
+        )
+        self.crops["paddy"] = paddy
+        self.crops["rice"] = paddy
+
+    def load_all(self):
+        # Wheat loads from backend/models/wheat or root backend/models
+        self.crops["wheat"].load(fallback_dir=self.base_dir)
+        self.crops["cotton"].load()
+        self.crops["paddy"].load()
+
+    def get_bundle(self, crop_name: Optional[str]) -> Optional[CropModelBundle]:
+        if not crop_name:
+            return self.crops.get("wheat")
+        key = str(crop_name).strip().lower()
+        if "wheat" in key:
+            return self.crops.get("wheat")
+        if "cotton" in key:
+            return self.crops.get("cotton")
+        if "paddy" in key or "rice" in key or "dhan" in key:
+            return self.crops.get("paddy")
+        return self.crops.get(key)
+
+# Initialize global registry and backward-compatible references
+crop_registry = CropModelRegistry(MODELS_ROOT)
 model = None
 scaler = None
 feature_columns: List[str] = []
@@ -147,40 +248,22 @@ categorical_options: Dict[str, List[str]] = {}
 def load_artifacts():
     global model, scaler, feature_columns, pheno_df, categorical_options
     
-    print(f"[Backend Init] Loading model from: {MODEL_PATH}")
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
-    model = joblib.load(MODEL_PATH)
+    # Load all crop bundles in registry
+    crop_registry.load_all()
+    wheat_bundle = crop_registry.get_bundle("wheat")
 
-    print(f"[Backend Init] Loading scaler from: {SCALER_PATH}")
-    if not os.path.exists(SCALER_PATH):
-        raise FileNotFoundError(f"Scaler file not found at {SCALER_PATH}")
-    scaler = joblib.load(SCALER_PATH)
-
-    # Ensure backwards compatibility for MinMaxScaler across scikit-learn versions
-    # without ever calling .clip() on the scaler object
-    if hasattr(scaler, 'feature_scaler') and scaler.feature_scaler is not None:
-        if not hasattr(scaler.feature_scaler, 'clip'):
-            scaler.feature_scaler.clip = False
-    if hasattr(scaler, 'target_scaler') and scaler.target_scaler is not None:
-        if not hasattr(scaler.target_scaler, 'clip'):
-            scaler.target_scaler.clip = False
-
-    print(f"[Backend Init] Loading feature columns from: {COLUMNS_PATH}")
-    if not os.path.exists(COLUMNS_PATH):
-        raise FileNotFoundError(f"Feature columns file not found at {COLUMNS_PATH}")
-    with open(COLUMNS_PATH, "r", encoding="utf-8") as f:
-        feature_columns = json.load(f)
+    # Maintain global references for backward compatibility
+    if wheat_bundle and wheat_bundle.is_available:
+        model = wheat_bundle.model
+        scaler = wheat_bundle.scaler
+        feature_columns = wheat_bundle.feature_columns
 
     print(f"[Backend Init] Loading dataset from: {DATA_PATH}")
     if os.path.exists(DATA_PATH):
         pheno_df = pd.read_csv(DATA_PATH)
-        # Precompute unique categorical values
         unique_names = sorted(pheno_df["Name"].dropna().astype(str).unique().tolist())
         unique_taxas = sorted(pheno_df["Taxa"].dropna().astype(str).unique().tolist())
         unique_families = sorted(pheno_df["Family"].dropna().astype(str).unique().tolist())
-        
-        # Include known locations and preset locations
         csv_locations = pheno_df["Location"].dropna().astype(str).unique().tolist()
         combined_locations = sorted(list(set(csv_locations + ["Spillman", "Pullman", "Central Plain", "Hill Station Research Field"])))
         
@@ -381,25 +464,33 @@ class PredictionResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # 5. Core Preprocessing & Inference Pipeline
 # ---------------------------------------------------------------------------
-def preprocess_and_predict(data: CropInput) -> float:
+def preprocess_and_predict(data: CropInput, bundle: Optional[CropModelBundle] = None) -> float:
     """
-    Applies the exact notebook preprocessing sequence:
-    1. Verify feature_columns is loaded and non-empty (authoritative feature list)
+    Applies the exact preprocessing sequence for the crop model bundle:
+    1. Resolve active crop model bundle from registry
     2. Construct single-row DataFrame from raw inputs
     3. Apply pd.get_dummies()
-    4. Reindex to match the exact 1,328 training feature columns with fill_value=0
+    4. Reindex to match the exact training feature columns with fill_value=0
        (any unseen category automatically gets 0 for all training one-hot features)
     5. Verify feature matrix is NOT empty (shape[1] > 0)
     6. Transform via MinMaxScaler followed by StandardScaler (ScalerBundle)
     7. Match XGBoost booster expectation (nameless 2D numpy array vs DataFrame with feature names)
-    8. XGBoost predict
+    8. XGBoost predict with feature_types safety
     9. Inverse-transform to actual days
     """
     global feature_columns, scaler, model
-    if not feature_columns:
-        load_artifacts()
+    
+    active_bundle = bundle or crop_registry.get_bundle(data.Crop or "Wheat")
+    if active_bundle and active_bundle.is_available:
+        active_model = active_bundle.model
+        active_scaler = active_bundle.scaler
+        active_features = active_bundle.feature_columns
+    else:
+        active_model = model
+        active_scaler = scaler
+        active_features = feature_columns
 
-    if not feature_columns or len(feature_columns) == 0:
+    if not active_features or len(active_features) == 0:
         raise ValueError("Authoritative feature_columns is empty. Artifacts were not loaded.")
 
     input_dict = {
@@ -426,11 +517,11 @@ def preprocess_and_predict(data: CropInput) -> float:
     
     # 3. Exact column order alignment matching training feature_columns.json (1,328 features)
     # If the frontend sends any category not seen during training, fill its one-hot column with 0
-    input_aligned = input_encoded.reindex(columns=feature_columns, fill_value=0)
+    input_aligned = input_encoded.reindex(columns=active_features, fill_value=0)
     if input_aligned.shape[1] == 0:
-        raise ValueError(f"Feature matrix has 0 columns after alignment against {len(feature_columns)} feature_columns.")
-    if input_aligned.shape[1] != len(feature_columns):
-        raise ValueError(f"Feature matrix count mismatch: aligned {input_aligned.shape[1]} vs expected {len(feature_columns)}.")
+        raise ValueError(f"Feature matrix has 0 columns after alignment against {len(active_features)} feature_columns.")
+    if input_aligned.shape[1] != len(active_features):
+        raise ValueError(f"Feature matrix count mismatch: aligned {input_aligned.shape[1]} vs expected {len(active_features)}.")
 
     # 4. Convert to 2D numpy array of floats (ensuring no feature name baggage if model expects nameless array)
     X_matrix = input_aligned.values.astype(np.float64)
@@ -438,12 +529,18 @@ def preprocess_and_predict(data: CropInput) -> float:
         raise ValueError("Extracted feature matrix array has 0 features.")
 
     # 5. Scaling transformation (MinMax + Standard)
-    input_scaled = scaler.transform(X_matrix)
+    input_scaled = active_scaler.transform(X_matrix)
     if input_scaled.shape[1] == 0:
         raise ValueError("Scaled feature matrix has 0 features.")
 
+    # Ensure model feature_types attribute is present to eliminate any cross-version warning/error
+    if not hasattr(active_model, 'feature_types'):
+        active_model.feature_types = None
+
     # 6. Check if booster expects feature names or nameless numpy array
-    booster = model.get_booster() if hasattr(model, "get_booster") else None
+    booster = active_model.get_booster() if hasattr(active_model, "get_booster") else None
+    if booster is not None and not hasattr(booster, 'feature_types'):
+        booster.feature_types = None
     booster_feature_names = getattr(booster, "feature_names", None) if booster is not None else None
 
     if booster_feature_names is not None and len(booster_feature_names) > 0:
@@ -454,10 +551,10 @@ def preprocess_and_predict(data: CropInput) -> float:
         model_input = np.asarray(input_scaled, dtype=np.float64)
 
     # 7. Model prediction
-    raw_pred_scaled = model.predict(model_input)
+    raw_pred_scaled = active_model.predict(model_input)
     
     # 8. Inverse-transform prediction from [0, 1] range to real Days to Heading
-    dth_pred = float(scaler.inverse_transform(raw_pred_scaled).ravel()[0])
+    dth_pred = float(active_scaler.inverse_transform(raw_pred_scaled).ravel()[0])
     return dth_pred
 
 def calculate_feature_impacts(data: CropInput) -> List[FeatureImpact]:
@@ -527,12 +624,15 @@ def health_check():
     """
     Health check endpoint returning system status and model readiness.
     """
+    wheat_bundle = crop_registry.get_bundle("wheat")
     return {
         "status": "healthy",
-        "model_loaded": model is not None,
-        "scaler_loaded": scaler is not None,
-        "total_features": len(feature_columns),
+        "model_loaded": wheat_bundle.is_available if wheat_bundle else (model is not None),
+        "scaler_loaded": (wheat_bundle.scaler is not None) if wheat_bundle else (scaler is not None),
+        "total_features": len(wheat_bundle.feature_columns) if wheat_bundle else len(feature_columns),
         "total_dataset_rows": len(pheno_df) if pheno_df is not None else 0,
+        "available_crop_models": ["Wheat"],
+        "registered_crops": ["Wheat", "Cotton", "Paddy"],
         "timestamp": datetime.utcnow().isoformat() + "Z"
     }
 
@@ -546,12 +646,18 @@ def predict(input_data: CropInput):
     payload_dict = input_data.dict()
     print(f"[DEBUG /api/predict] Received payload: {json.dumps(payload_dict, default=str)}")
 
-    # 1. Validate crop species against training dataset support
+    # 1. Resolve crop model from registry
     crop_val = (input_data.Crop or "Wheat").strip()
-    if crop_val.lower() not in ["wheat", "wheat (triticum aestivum)", "wheat (supported)"]:
+    bundle = crop_registry.get_bundle(crop_val)
+
+    if bundle is None or not bundle.is_available:
+        crop_display = bundle.display_name if bundle else crop_val
+        notice = bundle.requirements_notice if bundle and bundle.requirements_notice else (
+            f"Prediction for {crop_display} requires a dedicated dataset and trained model. The current deployed model is trained on Wheat data."
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This crop is not supported by the current trained model. Please select a crop available in the training dataset."
+            detail=f"A trained model for this crop is not yet available. {notice}"
         )
 
     # Detect unseen categorical features
@@ -587,7 +693,7 @@ def predict(input_data: CropInput):
         )
 
     try:
-        raw_prediction = preprocess_and_predict(input_data)
+        raw_prediction = preprocess_and_predict(input_data, bundle=bundle)
         rounded_pred = round(raw_prediction, 2)
         
         # Categorize maturity window
@@ -655,6 +761,11 @@ def get_crop_options():
         "supported_crop": "Wheat",
         "supported_crops": ["Wheat"],
         "all_crops": ["Wheat", "Paddy", "Cotton", "Maize", "Other"],
+        "crop_models": {
+            "Wheat": {"status": "available", "path": "backend/models/wheat/", "features": 1328},
+            "Cotton": {"status": "pending_dataset", "path": "backend/models/cotton/", "requirements": "Gossypium hirsutum phenology dataset"},
+            "Paddy": {"status": "pending_dataset", "path": "backend/models/paddy/", "requirements": "Oryza sativa agronomic dataset"}
+        },
         "dataset_species": "Wheat (Triticum aestivum)",
         "message": "The XGBoost model was trained exclusively on 1,944 wheat (Triticum aestivum) observations from Spillman Agronomy Farm."
     }
