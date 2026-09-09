@@ -8,23 +8,14 @@ export interface CropOption {
   isSupported: boolean;
 }
 
+// Only Wheat is supported because the currently available Pheno.csv dataset and trained XGBoost model are Wheat-based.
 export const CROP_DATABASE: CropOption[] = [
-  { name: 'Wheat', aliases: ['wheat', 'gehun', 'triticum', 'winter wheat', 'spring wheat'], scientific: 'Triticum aestivum', isSupported: true },
-  { name: 'Cotton', aliases: ['cotton', 'kapas', 'gossypium'], scientific: 'Gossypium hirsutum', isSupported: false },
-  { name: 'Paddy', aliases: ['paddy', 'rice', 'dhan', 'oryza'], scientific: 'Oryza sativa (Rice)', isSupported: false },
-  { name: 'Maize', aliases: ['maize', 'corn', 'makka', 'zea'], scientific: 'Zea mays (Corn)', isSupported: false },
-  { name: 'Barley', aliases: ['barley', 'jau', 'hordeum'], scientific: 'Hordeum vulgare', isSupported: false },
-  { name: 'Sorghum', aliases: ['sorghum', 'jowar', 'milo'], scientific: 'Sorghum bicolor', isSupported: false },
-  { name: 'Pearl Millet', aliases: ['pearl millet', 'bajra', 'millet'], scientific: 'Pennisetum glaucum', isSupported: false },
-  { name: 'Chickpea', aliases: ['chickpea', 'chana', 'gram', 'bengal gram'], scientific: 'Cicer arietinum', isSupported: false },
-  { name: 'Soybean', aliases: ['soybean', 'soya', 'glycine'], scientific: 'Glycine max', isSupported: false },
-  { name: 'Sugarcane', aliases: ['sugarcane', 'ganna', 'saccharum'], scientific: 'Saccharum officinarum', isSupported: false },
-  { name: 'Mustard', aliases: ['mustard', 'sarson', 'rai', 'brassica'], scientific: 'Brassica nigra', isSupported: false },
-  { name: 'Groundnut', aliases: ['groundnut', 'peanut', 'moongphali', 'arachis'], scientific: 'Arachis hypogaea', isSupported: false },
-  { name: 'Sunflower', aliases: ['sunflower', 'surajmukhi', 'helianthus'], scientific: 'Helianthus annuus', isSupported: false },
-  { name: 'Oats', aliases: ['oats', 'jai', 'avena'], scientific: 'Avena sativa', isSupported: false },
-  { name: 'Potato', aliases: ['potato', 'aloo', 'solanum'], scientific: 'Solanum tuberosum', isSupported: false },
-  { name: 'Tomato', aliases: ['tomato', 'tamatar'], scientific: 'Solanum lycopersicum', isSupported: false },
+  {
+    name: 'Wheat',
+    aliases: ['wheat', 'gehun', 'triticum', 'winter wheat', 'spring wheat', 'common wheat', 'durum wheat', 'wheat (triticum aestivum)'],
+    scientific: 'Triticum aestivum',
+    isSupported: true,
+  },
 ];
 
 export const isCropSupported = (cropName?: string): boolean => {
@@ -56,11 +47,11 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
     setQuery(value || 'Wheat');
   }, [value]);
 
-  // Filter matching suggestions dynamically
+  // Filter matching suggestions dynamically (only Wheat will match)
   const suggestions = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
     if (!trimmed) {
-      return CROP_DATABASE.slice(0, 6);
+      return CROP_DATABASE;
     }
     return CROP_DATABASE.filter((crop) => {
       if (crop.name.toLowerCase().includes(trimmed)) return true;
@@ -139,7 +130,7 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
             disabled={disabled}
             onChange={handleInputChange}
             onFocus={() => setIsOpen(true)}
-            placeholder="Type or search crop name (e.g. Wheat, Cotton, Paddy, Maize)..."
+            placeholder="Search crop name (e.g. Wheat)..."
             autoComplete="off"
             className={`w-full pl-3.5 pr-20 py-2.5 text-sm rounded-xl border bg-white text-slate-900 placeholder:text-slate-400 font-medium transition-all shadow-2xs focus:outline-none ${
               error
@@ -155,7 +146,7 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
               <button
                 type="button"
                 onClick={handleClear}
-                className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-md transition"
+                className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-md transition cursor-pointer"
                 title="Clear crop name"
               >
                 <X className="w-3.5 h-3.5" />
@@ -164,7 +155,7 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
             <button
               type="button"
               onClick={() => setIsOpen(!isOpen)}
-              className="p-1 text-slate-400 hover:text-slate-600 rounded-md transition"
+              className="p-1 text-slate-400 hover:text-slate-600 rounded-md transition cursor-pointer"
               title="Toggle suggestions"
             >
               <ChevronDown className={`w-4 h-4 transition-transform duration-150 ${isOpen ? 'rotate-180 text-emerald-600' : ''}`} />
@@ -176,9 +167,9 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
         {isOpen && (
           <div className="absolute z-50 w-full mt-1.5 bg-white rounded-2xl border border-slate-200 shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
             <div className="px-3 py-2 bg-slate-50/80 border-b border-slate-100 flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-              <span>Suggestions:</span>
+              <span>Supported Crop Suggestions:</span>
               <span className="text-[10px] text-slate-400 font-normal normal-case">
-                Click to select or continue typing
+                Click to select
               </span>
             </div>
 
@@ -191,37 +182,25 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
                       key={crop.name}
                       type="button"
                       onClick={() => handleSelectSuggestion(crop.name)}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs transition cursor-pointer ${
+                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-xs transition cursor-pointer ${
                         isSelected
                           ? 'bg-emerald-50 text-emerald-950 font-bold'
                           : 'hover:bg-slate-50 text-slate-700'
                       }`}
                     >
                       <div className="flex items-center gap-2.5">
-                        <div
-                          className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                            crop.isSupported
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : 'bg-slate-100 text-slate-500'
-                          }`}
-                        >
-                          {crop.isSupported ? '✓' : '•'}
+                        <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold bg-emerald-100 text-emerald-700">
+                          ✓
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="font-semibold text-slate-900">{crop.name}</span>
-                            {crop.isSupported ? (
-                              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
-                                Supported
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-medium px-1.5 py-0.2 rounded bg-slate-100 text-slate-500">
-                                Requires Model
-                              </span>
-                            )}
+                            <span className="font-semibold text-slate-900 text-sm">{crop.name}</span>
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              Supported (Pheno.csv)
+                            </span>
                           </div>
-                          <span className="text-[11px] text-slate-400 italic block">
-                            {crop.scientific}
+                          <span className="text-[11px] text-slate-500 italic block mt-0.5">
+                            {crop.scientific} • 1,944 observations
                           </span>
                         </div>
                       </div>
@@ -231,11 +210,19 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
                   );
                 })
               ) : (
-                <div className="p-3 text-center text-xs text-slate-500">
-                  <p>No preset crop matches "{query}".</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    You can still use "{query}" as a custom crop entry.
+                <div className="p-3.5 text-center text-xs text-slate-600">
+                  <p className="font-semibold text-slate-800">No supported crop matches "{query}".</p>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                    The currently available <strong>Pheno.csv</strong> dataset and trained XGBoost model are strictly Wheat-based.
                   </p>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectSuggestion('Wheat')}
+                    className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-semibold text-xs border border-emerald-200 transition cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Select Wheat (Supported)</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -247,13 +234,20 @@ export const CropSearchInput: React.FC<CropSearchInputProps> = ({
       {!supported && (
         <div className="p-4 rounded-2xl bg-amber-50/90 border border-amber-200/90 text-amber-950 text-xs flex items-start gap-3 shadow-2xs animate-in fade-in duration-200">
           <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             <h5 className="font-bold text-amber-900">
-              A trained model for this crop is not yet available
+              Unsupported Crop: {displayCropName}
             </h5>
             <p className="text-amber-900/90 leading-relaxed">
-              Prediction for <strong>{displayCropName}</strong> requires a dedicated dataset and trained regression model for {displayCropName}. The current deployed model is trained on Wheat data.
+              Only <strong>Wheat (Triticum aestivum)</strong> is supported by the current trained model and Pheno.csv dataset.
             </p>
+            <button
+              type="button"
+              onClick={() => handleSelectSuggestion('Wheat')}
+              className="mt-1 text-xs font-bold text-emerald-700 underline hover:text-emerald-800 cursor-pointer block"
+            >
+              Switch back to Wheat (Supported)
+            </button>
           </div>
         </div>
       )}

@@ -225,6 +225,7 @@ export const PredictionForm: React.FC<PredictionFormProps> = ({
     if (preset) {
       setFormData({
         ...preset.data,
+        Crop: 'Wheat',
         mode: 'dataset',
         allow_unseen_categories: false,
       });
